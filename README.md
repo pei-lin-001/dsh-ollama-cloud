@@ -63,6 +63,13 @@ model in hourly buckets, keeps 30 days in `$DSH_HOME/ollama-cloud-usage.json`, a
 with the reset times the balance reports. Other clients' traffic stays invisible to that meter, so
 server numbers win when they exist.
 
+Every history image is re-sent on every step, and Ollama Cloud rejects an oversized request at the
+gateway before the model runs (413, around 12 MB observed). The plugin keeps image base64 under 6 MiB:
+on `0.2.x` it writes `maxRequestImageBytes` into the route, so the adapter stops at the bound and the
+harness offloads the oldest images and retries with placeholders; on `0.1.0-rc.x`, whose adapter has
+no such bound, the plugin drops the oldest images from the outgoing request itself. Text is not part
+of that budget.
+
 ## UI
 
 ![Settings: connection and plan quota](docs/ui-settings-quota.png)
@@ -89,6 +96,7 @@ Entry config is the `ollama-cloud` settings section; override it in the profile 
     webTools: true                # register ollama_web_search / ollama_web_fetch
     maxOutputChars: 20000         # per ollama_web_fetch result
     usageCacheSeconds: 120        # /api/balance + /api/usage cache
+    maxRequestImageBytes: 6291456 # base64 image budget per request; 0 = adapter default
 ```
 
 ## Command and routes

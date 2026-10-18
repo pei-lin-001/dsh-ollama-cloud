@@ -58,6 +58,11 @@ cd ~/Dev/dsh-ollama-cloud && dsh plugin --profile web add link:$PWD
 `$DSH_HOME/ollama-cloud-usage.json`，再按 balance 的重置时刻把总量对齐到相同窗口。其他客户端的
 流量不进这个计量，所以有服务端数字时以服务端为准。
 
+历史里的图片每一步都会重新发送，请求体过大时 ollama.com 的网关会在模型之前直接 413（实测约 12 MB）。
+插件把图片 base64 压在 6 MiB 以内：`0.2.x` 上会把 `maxRequestImageBytes` 写进路由，适配器到界即停，
+由 harness 去掉最旧的图、换成占位并重试；`0.1.0-rc.x` 的适配器没有这个界限，插件就在出站请求里自己
+丢掉最旧的图。文本不计入这个预算。
+
 ## 界面
 
 ![设置页：连接与套餐额度](docs/ui-settings-quota.png)
@@ -83,6 +88,7 @@ cd ~/Dev/dsh-ollama-cloud && dsh plugin --profile web add link:$PWD
     webTools: true                # 注册 ollama_web_search / ollama_web_fetch
     maxOutputChars: 20000         # 单次 ollama_web_fetch 输出上限
     usageCacheSeconds: 120        # /api/balance + /api/usage 缓存
+    maxRequestImageBytes: 6291456 # 单次请求的图片 base64 预算；0 表示交给适配器默认
 ```
 
 ## 对外接口

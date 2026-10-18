@@ -20,7 +20,19 @@ import {
   quotaBar,
   reasoningEfforts,
 } from '../lib/ollama.js'
-import { apply, deepEqual, localHost, overlayLocalTokens, profileEqual, sameOriginPost, staleRoutes } from '../lib/index.js'
+import {
+  apply,
+  base64Length,
+  deepEqual,
+  localHost,
+  overlayLocalTokens,
+  profileEqual,
+  requestImageBudget,
+  sameOriginPost,
+  schemaDeclaresProperty,
+  staleRoutes,
+  trimRequestImages,
+} from '../lib/index.js'
 
 // --- Thinking levels ---------------------------------------------------------
 
@@ -315,28 +327,86 @@ assert.equal(profileEqual(undefined, written), false, 'an absent route is writte
 assert.equal(profileEqual({ ...resolvedRoute, displayName: 'Other' }, written), false)
 assert.equal(profileEqual({ ...resolvedRoute, models: [] }, written), false, 'a catalog change is a change')
 assert.equal(profileEqual({ ...resolvedRoute, defaultInput: ['text', 'image'] }, written), true, 'a field this plugin does not own is left alone')
+assert.equal(
+  profileEqual({ ...resolvedRoute, maxRequestImageBytes: 6 * 1024 * 1024 }, { ...written, maxRequestImageBytes: 6 * 1024 * 1024 }),
+  true,
+)
+assert.equal(profileEqual({ ...resolvedRoute, maxRequestImageBytes: 20971520 }, { ...written, maxRequestImageBytes: 6 * 1024 * 1024 }), false)
+assert.equal(profileEqual({ ...resolvedRoute, maxRequestImageBytes: 6 * 1024 * 1024 }, written), true, 'a field the profile omits is not compared')
+
+// --- Request image budget ---------------------------------------------------
+
+const imageBlock = (bytes, id = 'img') => ({
+  type: 'image',
+  attachment: { attachmentId: id, bytes, mediaType: 'image/png', width: 100, height: 100 },
+})
+const userMessage = (...content) => Object.freeze({ id: 'm1', role: 'user', content: Object.freeze(content) })
+
+assert.equal(base64Length(3), 4)
+assert.equal(base64Length(0), 0)
+assert.equal(base64Length(undefined), 0)
+assert.equal(requestImageBudget({ maxRequestImageBytes: 0 }), undefined)
+assert.equal(requestImageBudget({ maxRequestImageBytes: -1 }), undefined)
+assert.equal(requestImageBudget({ maxRequestImageBytes: 1.5 }), undefined)
+assert.equal(requestImageBudget({ maxRequestImageBytes: 1024 }), 1024)
+
+// schemastery's `toJSON()` is a ref graph; object fields live under `dict`.
+const schemaWithBound = {
+  uid: 0,
+  refs: {
+    0: { type: 'object', meta: {}, dict: { providers: 1 } },
+    1: { type: 'dict', meta: { default: {} }, inner: 2, sKey: 3 },
+    2: { type: 'object', meta: {}, dict: { displayName: 3, maxRequestImageBytes: 4 } },
+    3: { type: 'string', meta: {} },
+    4: { type: 'number', meta: { default: 20971520 } },
+  },
+}
+assert.equal(schemaDeclaresProperty(schemaWithBound, 'maxRequestImageBytes'), true)
+assert.equal(schemaDeclaresProperty(schemaWithBound, 'requestImageMaxBytes'), false)
+assert.equal(schemaDeclaresProperty(undefined, 'maxRequestImageBytes'), false)
+assert.equal(
+  schemaDeclaresProperty({ type: 'object', properties: { maxRequestImageBytes: { type: 'number' } } }, 'maxRequestImageBytes'),
+  true,
+  'a plain JSON-schema view is understood too',
+)
+
+const smallRequest = [userMessage({ type: 'text', text: 'hi' }, imageBlock(1000))]
+assert.equal(trimRequestImages(smallRequest, 6 * 1024 * 1024).messages, smallRequest, 'a request inside the budget is untouched')
+assert.equal(trimRequestImages(smallRequest, 6 * 1024 * 1024).trimmed, 0)
+
+const oldest = imageBlock(1_000_000, 'old')
+const newest = imageBlock(4_000_000, 'new')
+const overRequest = [userMessage(oldest, newest)]
+const trimmed = trimRequestImages(overRequest, 6 * 1024 * 1024)
+assert.equal(trimmed.trimmed, 1, 'only the images the budget needs are dropped')
+assert.equal(trimmed.messages[0].content[0].type, 'text', 'the oldest image becomes a placeholder')
+assert.equal(trimmed.messages[0].content[1], newest, 'the newest image stays')
+assert.equal(overRequest[0].content[0], oldest, 'the session message is not mutated')
+assert.equal(trimmed.total <= 6 * 1024 * 1024, true)
+
+const nestedImage = imageBlock(5_000_000, 'nested')
+const toolMessage = [userMessage({ type: 'tool-result', toolCallId: 'c1', content: Object.freeze([nestedImage]) })]
+const nestedTrim = trimRequestImages(toolMessage, 1024)
+assert.equal(nestedTrim.trimmed, 1, 'images inside a tool result are counted and dropped')
+assert.equal(nestedTrim.messages[0].content[0].content[0].type, 'text')
+assert.equal(toolMessage[0].content[0].content[0], nestedImage, 'the original tool result is not mutated')
+
+assert.equal(
+  trimRequestImages([userMessage({ type: 'image', offloaded: true, attachment: { bytes: 9_000_000 } })], 1024).trimmed,
+  0,
+  'an already offloaded image is not counted',
+)
 
 // --- Route handlers against a fake composition ------------------------------
 //
 // The plugin is mounted on a stub Cordis context so the Web routes, the catalog
-// write, and the sync guard can be exercised without a running harness.
+// write, the sync guard and the local image trim can be exercised without a
+// running harness.
 
 const home = await mkdtemp(join(tmpdir(), 'dsh-oc-home-'))
 const previousHome = process.env.DSH_HOME
 process.env.DSH_HOME = home
 
-const providers = {
-  // A route this plugin wrote before `provider` was renamed.
-  'old-route': {
-    displayName: 'Ollama Cloud',
-    api: 'openai-completions',
-    baseURL: 'https://ollama.com/v1',
-    apiKeyEnv: 'OLLAMA_API_KEY',
-    models: [],
-  },
-}
-const writes = []
-const routes = new Map()
 const defaults = {
   provider: 'ollama-cloud',
   displayName: 'Ollama Cloud',
@@ -347,41 +417,102 @@ const defaults = {
   webTools: true,
   maxOutputChars: 20000,
   usageCacheSeconds: 120,
+  maxRequestImageBytes: 6 * 1024 * 1024,
 }
-const ctx = {
-  logger: { warn() {}, info() {} },
-  on() {},
-  effect: (fn) => fn(),
-  inject: (_names, callback) => callback(ctx),
-  settings: {
-    register: (_ns, _schema, options) => ({
-      get: () => ({ ...defaults, ...(options && options.base) }),
-      watch: () => () => {},
-    }),
-    get: (ns) => (ns === 'llm-pi-ai' ? { providers } : undefined),
-    mutate: async (ns, ops) => {
-      writes.push({ ns, ops })
-      for (const op of ops) {
-        if (op.op === 'set') providers[op.path[1]] = op.value
-        else delete providers[op.path[1]]
-      }
+
+/**
+ * Mount the plugin on a stub context. `schema` stands in for the `llm-pi-ai`
+ * descriptor the real settings service exposes, which is how the plugin tells
+ * an adapter that declares an image bound (0.2.x) from one that does not
+ * (0.1.0-rc.x).
+ */
+function mountFake(schema) {
+  const providers = {
+    // A route this plugin wrote before `provider` was renamed.
+    'old-route': {
+      displayName: 'Ollama Cloud',
+      api: 'openai-completions',
+      baseURL: 'https://ollama.com/v1',
+      apiKeyEnv: 'OLLAMA_API_KEY',
+      models: [],
     },
-  },
-  credentials: {
-    resolve: async () => ({ value: 'test-key' }),
-    set: async () => {},
-    unset: async () => {},
-  },
-  tools: { register: () => () => {} },
-  commands: { register: () => () => {} },
-  webServer: {
-    register: (route) => {
-      routes.set(route.path, route)
-      return () => routes.delete(route.path)
+  }
+  const writes = []
+  const routes = new Map()
+  const handlers = new Map()
+  const streamCalls = []
+  const llm = {
+    stream(options) {
+      streamCalls.push(options)
+      return options
     },
+    async prepareCall(config) {
+      return Object.freeze({
+        config,
+        stream: (options) => {
+          streamCalls.push(options)
+          return options
+        },
+      })
+    },
+  }
+  const ctx = {
+    logger: { warn() {}, info() {} },
+    on: (event, handler) => handlers.set(event, handler),
+    effect: (fn) => fn(),
+    inject: (_names, callback) => callback(ctx),
+    settings: {
+      register: (_ns, _schema, options) => ({
+        get: () => ({ ...defaults, ...(options && options.base) }),
+        watch: () => () => {},
+      }),
+      get: (ns) => (ns === 'llm-pi-ai' ? { providers } : undefined),
+      describe: () => [{ ns: 'llm-pi-ai', schema, value: { providers } }],
+      mutate: async (ns, ops) => {
+        writes.push({ ns, ops })
+        for (const op of ops) {
+          if (op.op === 'set') providers[op.path[1]] = op.value
+          else delete providers[op.path[1]]
+        }
+      },
+    },
+    credentials: {
+      resolve: async () => ({ value: 'test-key' }),
+      set: async () => {},
+      unset: async () => {},
+    },
+    llm,
+    tools: { register: () => () => {} },
+    commands: { register: () => () => {} },
+    webServer: {
+      register: (route) => {
+        routes.set(route.path, route)
+        return () => routes.delete(route.path)
+      },
+    },
+  }
+  return { providers, writes, routes, handlers, llm, streamCalls, dispose: apply(ctx, {}) }
+}
+
+const boundSchema = {
+  uid: 0,
+  refs: {
+    0: { type: 'object', meta: {}, dict: { providers: 1 } },
+    1: { type: 'dict', meta: { default: {} }, inner: 2, sKey: 3 },
+    2: { type: 'object', meta: {}, dict: { displayName: 3, maxRequestImageBytes: 4 } },
+    3: { type: 'string', meta: {} },
+    4: { type: 'number', meta: { default: 20971520 } },
   },
 }
-const dispose = apply(ctx, {})
+const plainSchema = {
+  uid: 0,
+  refs: {
+    0: { type: 'object', meta: {}, dict: { providers: 1 } },
+    1: { type: 'dict', meta: { default: {} }, inner: 2, sKey: 3 },
+    2: { type: 'object', meta: {}, dict: { displayName: 3 } },
+    3: { type: 'string', meta: {} },
+  },
+}
 
 const showPayload = () => ({
   capabilities: ['completion', 'tools', 'thinking', 'vision'],
@@ -407,8 +538,8 @@ globalThis.fetch = async (url) => {
 }
 
 /** Invoke one registered route with a browser-shaped request. */
-async function callRoute(path, { method = 'POST', headers = {}, body } = {}) {
-  const route = routes.get(path)
+async function callRoute(mount, path, { method = 'POST', headers = {}, body } = {}) {
+  const route = mount.routes.get(path)
   assert.ok(route !== undefined, `${path} is registered`)
   const res = {
     status: undefined,
@@ -426,36 +557,73 @@ async function callRoute(path, { method = 'POST', headers = {}, body } = {}) {
 }
 
 const appHeaders = { host: '127.0.0.1:8123', origin: 'null' }
-const synced = await callRoute('/_dsh/ollama-cloud/sync', { headers: appHeaders })
+
+/** A request shaped like the agent loop's: deep-frozen before dispatch. */
+const frozenRequest = (provider, ...content) => {
+  const message = Object.freeze({ id: 'm1', role: 'user', content: Object.freeze(content) })
+  return Object.freeze({ provider, model: 'glm-5.3', messages: Object.freeze([message]) })
+}
+
+// Adapter with a request image bound (0.2.x): the plugin hands it the budget.
+const bounded = mountFake(boundSchema)
+const synced = await callRoute(bounded, '/_dsh/ollama-cloud/sync', { headers: appHeaders })
 assert.equal(synced.status, 200)
 assert.equal(synced.payload.ok, true)
 assert.equal(synced.payload.status.models.length, 2, 'the live catalog is written and reported')
-assert.ok(providers['ollama-cloud'] !== undefined, 'the configured route receives the profile')
-assert.equal(providers['old-route'], undefined, 'the route left by the old provider name is removed')
+assert.equal(synced.payload.status.imageBudgetSupported, true)
+assert.equal(bounded.providers['ollama-cloud'].maxRequestImageBytes, 6 * 1024 * 1024, 'the bound is written where the adapter declares it')
+assert.equal(synced.payload.status.routeImageBudget, 6 * 1024 * 1024)
+assert.equal(bounded.providers['old-route'], undefined, 'the route left by the old provider name is removed')
 assert.ok(
-  writes.some(({ ops }) => ops.some((op) => op.op === 'unset' && op.path[1] === 'old-route')),
+  bounded.writes.some(({ ops }) => ops.some((op) => op.op === 'unset' && op.path[1] === 'old-route')),
   'removal goes through the settings write path',
 )
 
-const resynced = await callRoute('/_dsh/ollama-cloud/sync', { headers: appHeaders })
+const resynced = await callRoute(bounded, '/_dsh/ollama-cloud/sync', { headers: appHeaders })
 assert.equal(resynced.payload.status.sync.changed, false, 'a second sync finds the route it just wrote unchanged')
-assert.equal(writes.length, 1, 'an unchanged route is not written again')
+assert.equal(bounded.writes.length, 1, 'an unchanged route is not written again')
 
-const rebound = await callRoute('/_dsh/ollama-cloud/sync', {
+// The adapter enforces the bound itself, so the plugin must not also trim.
+const boundedRequest = frozenRequest('ollama-cloud', imageBlock(4_000_000, 'x'))
+assert.equal(bounded.llm.stream(boundedRequest), boundedRequest, 'a bounded adapter receives the request untouched')
+
+const rebound = await callRoute(bounded, '/_dsh/ollama-cloud/sync', {
   headers: { host: 'evil.example:8123', origin: 'http://evil.example:8123' },
 })
 assert.equal(rebound.status, 403, 'a write behind a rebound domain is refused')
 
-const usageRoute = await callRoute('/_dsh/ollama-cloud/usage', { method: 'GET', headers: { host: '127.0.0.1:8123' } })
+const usageRoute = await callRoute(bounded, '/_dsh/ollama-cloud/usage', { method: 'GET', headers: { host: '127.0.0.1:8123' } })
 assert.equal(usageRoute.status, 200)
 assert.equal(usageRoute.payload.ok, true)
 assert.equal(usageRoute.payload.usage.sevenDay.requests, 7)
 assert.equal(usageRoute.payload.usage.balance.session.usedPercent, 40)
 assert.ok(usageRoute.payload.usage.local !== undefined, 'the local meter block travels with the report')
+bounded.dispose()
 
-dispose()
+// Adapter without a bound (0.1.0-rc.x): the plugin trims the outgoing request.
+const plain = mountFake(plainSchema)
+const syncedPlain = await callRoute(plain, '/_dsh/ollama-cloud/sync', { headers: appHeaders })
+assert.equal(syncedPlain.payload.status.imageBudgetSupported, false)
+assert.equal(plain.providers['ollama-cloud'].maxRequestImageBytes, undefined, 'no bound is written where the adapter has none')
+
+const plainRequest = frozenRequest('ollama-cloud', imageBlock(1_000_000, 'old'), imageBlock(4_000_000, 'new'))
+const guarded = plain.llm.stream(plainRequest)
+assert.notEqual(guarded, plainRequest, 'the guard hands an unbounded adapter a rewritten clone')
+assert.equal(guarded.messages[0].content[0].type, 'text', 'the oldest image becomes a placeholder')
+assert.equal(guarded.messages[0].content[1].type, 'image', 'the newest image is kept')
+assert.equal(plainRequest.messages[0].content[0].type, 'image', 'the frozen request is never mutated')
+
+const prepared = await plain.llm.prepareCall({ provider: 'ollama-cloud', model: 'glm-5.3' })
+assert.equal(prepared.stream(plainRequest).messages[0].content[0].type, 'text', 'the prepared-call path is guarded too')
+const otherRoute = frozenRequest('another-provider', imageBlock(9_000_000, 'x'))
+assert.equal(plain.llm.stream(otherRoute), otherRoute, 'other providers pass through untouched')
+
+plain.dispose()
+assert.equal(plain.llm.stream(plainRequest), plainRequest, 'the guard is removed on dispose')
+
 if (previousHome === undefined) delete process.env.DSH_HOME
 else process.env.DSH_HOME = previousHome
-await rm(home, { recursive: true, force: true })
+// The meter flushes on dispose without being awaited; retry past its temp file.
+await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 
 console.log('dsh-ollama-cloud smoke: ok')
