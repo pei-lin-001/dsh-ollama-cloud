@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { accumulate, hourKey, hourStart, openMeter, windowModels, windowTotals } from '../lib/meter.js'
+import { accumulate, hourKey, hourStart, openMeter, windowModels, windowSeries, windowTotals } from '../lib/meter.js'
 import {
   contextLength,
   fetchCatalog,
@@ -225,9 +225,18 @@ const nowMs = Date.parse('2026-10-18T04:30:00Z')
 accumulate(rows, { model: 'glm-5.3-flash', usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 40 }, at: nowMs })
 accumulate(rows, { model: 'glm-5.3-flash', usage: { inputTokens: 50, outputTokens: 10 }, at: nowMs })
 accumulate(rows, { model: 'kimi-k3', usage: { inputTokens: 1000, outputTokens: 200 }, at: nowMs - 2 * 3600_000 })
-assert.deepEqual(windowTotals(rows), { requests: 3, inputTokens: 1150, outputTokens: 230, cachedTokens: 40 })
+assert.deepEqual(windowTotals(rows), { requests: 3, inputTokens: 1150, outputTokens: 230, cachedTokens: 40, reasoningTokens: 0 })
 assert.equal(windowTotals(rows, { from: nowMs - 3600_000 }).inputTokens, 150, 'the 2h-old request is outside a 1h window')
 assert.deepEqual(windowModels(rows).map((row) => row.model), ['kimi-k3', 'glm-5.3-flash'])
+
+// Reasoning is folded into output by pi-ai; the meter keeps it alongside so the
+// UI can show the share without counting it twice.
+const reasoned = new Map()
+accumulate(reasoned, { model: 'glm-5.3-flash', usage: { inputTokens: 10, outputTokens: 50, reasoningTokens: 30 }, at: nowMs })
+assert.equal(windowTotals(reasoned).outputTokens, 50, 'output already contains the reasoning tokens')
+assert.equal(windowTotals(reasoned).reasoningTokens, 30, 'reasoning is tracked, not added on top')
+assert.equal(windowSeries(reasoned)[0].reasoningTokens, 30)
+
 assert.equal(hourKey(nowMs), '2026-10-18T04')
 assert.equal(hourStart('2026-10-18T04'), nowMs - 30 * 60_000)
 
@@ -254,7 +263,7 @@ await meterA.flush()
 const shared = await openMeter({ path: sharedPath, now: () => nowMs })
 assert.deepEqual(
   shared.totals({ from: 0 }),
-  { requests: 3, inputTokens: 15, outputTokens: 7, cachedTokens: 0 },
+  { requests: 3, inputTokens: 15, outputTokens: 7, cachedTokens: 0, reasoningTokens: 0 },
   'both processes keep their rows, and a re-flush does not double count',
 )
 
