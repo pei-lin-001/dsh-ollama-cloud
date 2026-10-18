@@ -1,26 +1,11 @@
 # dsh-ollama-cloud
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）接入 Ollama Cloud —— 只需一个 API key，无需本地 Ollama 服务。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）接入 Ollama Cloud。
+一个 API key，不用装本地 Ollama。
 
 [English](README.md) | 中文
 
-![主界面：侧栏额度条](docs/ui-main.png)
-
-只需一个 API key。插件会拉取 Ollama Cloud 的实时模型目录，写入 `llm-pi-ai` 的 `ollama-cloud`
-路由（含每个模型真实的思考等级），注册云端联网工具，并在界面里展示套餐额度与 token 用量。
-
-## 能力
-
-| | |
-|---|---|
-| **一次性配置** | key 存在凭据服务里（`$DSH_HOME/.credentials.yaml`），浏览器永远拿不到明文；保存 key 即触发首次目录拉取。 |
-| **目录自动拉取** | `GET /v1/models` + 逐模型 `POST /api/show`，写入 `llm-pi-ai` 设置项的 `ollama-cloud` 路由。启动时、凭据变更时、手动触发时各跑一次。 |
-| **真实思考等级** | 每个模型的 `reasoningEfforts` 来自它自己的 `/api/show` → `thinking.values`，只提供该模型真正接受的档位。 |
-| **对话 / 工具 / 视觉** | 由 `@deepseek-ai/dsh-llm-pi-ai` 承载（`api: openai-completions`，`baseURL: https://ollama.com/v1`）。本插件只负责数据，不重复造传输层。 |
-| **云端联网工具** | `ollama_web_search`、`ollama_web_fetch`，用同一把 key 调云端 `/api/web_search`、`/api/web_fetch`。 |
-| **额度进度条** | `GET /api/balance` 给出与 ollama.com 官方用量页一致的两个窗口——5h 会话与 7d 每周——各带剩余百分比和重置时刻。 |
-| **用量与 token** | 请求数、模型分布、token 与费用取自 `/api/usage`；套餐不返回 token 时由本机计量补全。 |
-| **中文界面** | 设置页、侧栏额度条、命令输出均为中文；工具描述保持英文（它们用于驱动模型）。 |
+![侧栏额度条](docs/ui-main.png)
 
 ## 安装
 
@@ -30,52 +15,57 @@ dsh plugin --profile desktop add git:github.com/pei-lin-001/dsh-ollama-cloud
 dsh plugin --profile web add git:github.com/pei-lin-001/dsh-ollama-cloud
 ```
 
-启动 profile，打开 **设置 → Ollama Cloud**，粘贴 [ollama.com/settings/keys](https://ollama.com/settings/keys)
-的 key，点 **保存并同步**。目录会写进 profile patch 的 `llm-pi-ai.providers.ollama-cloud`，模型立刻
-出现在模型选择器里。也可以用环境变量 `OLLAMA_API_KEY`；进程环境变量会遮蔽已保存的 key，此时凭据
-服务会拒绝写入。
+打开 **设置 → Ollama Cloud**，粘贴 [ollama.com/settings/keys](https://ollama.com/settings/keys) 的
+key，点 **保存并同步**。key 存进凭据服务（`$DSH_HOME/.credentials.yaml`），浏览器拿不到明文；目录
+写进 `llm-pi-ai` 设置项的 `ollama-cloud` 路由，模型随即出现在选择器里。
 
-**开发用 `link:` 方式**（需要让被链接的包能找到同版本的 peer）：
+也可以用环境变量 `OLLAMA_API_KEY`。进程环境变量会遮蔽已保存的 key，此时凭据服务拒绝写入。
+
+开发用 `link:`：
 
 ```sh
 git clone git@github.com:pei-lin-001/dsh-ollama-cloud.git ~/Dev/dsh-ollama-cloud
 cd ~/Dev/dsh-ollama-cloud && dsh plugin --profile web add link:$PWD
-./scripts/link-peers.sh          # 软链 schemastery、dsh-credentials、dsh-settings、dsh-tools
+./scripts/link-peers.sh   # schemastery、dsh-credentials、dsh-settings、dsh-tools
 ```
+
+被链接的包从自己的 `node_modules` 解析 peer，所以最后一步不能省。
+
+## 它做什么
+
+启动时、凭据变更时、手动触发时，插件拉取账号的模型目录并写成 `llm-pi-ai` 的一条路由：
+`GET /v1/models` 取 id，每个模型一次 `POST /api/show` 取细节。对话、工具、视觉、思考由
+`dsh-llm-pi-ai` 承载（`api: openai-completions`，`baseURL: https://ollama.com/v1`）；插件提供目录和
+凭据，传输由适配器负责。
+
+模型条目来自 `/api/show`：
+
+- `capabilities` 决定是否给 tools、vision 和思考档位。没有 `tools` 的模型默认跳过，
+  `includeNonToolModels` 可放开。
+- `<arch>.context_length` 变成 `contextWindow`。
+- `thinking.values` 变成 `reasoningEfforts`。`false` 对应 `off: 'none'`，因为不发参数会退回模型
+  默认（通常是开）；`true` 对应一个 `medium` 档；其余分级值一一对应，同时声明 `xhigh` 和 `max`
+  的模型两档都给。
+
+结果整体替换该路由的模型列表；内容没变就不重写。
+
+另外注册两个工具：`ollama_web_search`、`ollama_web_fetch`，用同一把 key 调 `/api/web_search` 和
+`/api/web_fetch`。
+
+额度与用量来自 `GET /api/balance`（5h 会话、7d 每周）和 `GET /api/usage`。当前套餐会在 usage 里
+返回 token 与费用，旧版套餐只给请求数。旧版套餐下，插件挂 `llm/stream` 读自己每次请求发出的
+`usage` chunk，按「小时|模型」累计 input/cached/output，30 天保留在
+`$DSH_HOME/ollama-cloud-usage.json`，再按 balance 的重置时刻把总量对齐到相同窗口。其他客户端的
+流量不进这个计量，所以有服务端数字时以服务端为准。
 
 ## 界面
 
-设置页沿用官方设置页的设计语言（同一套卡片、字号、间距 token），自上而下一条叙事：**连接 → 额度 →
-趋势 → 模型**。没有多余说明文字，只有标签、数字、图表和 tooltip。
-
 ![设置页：连接与套餐额度](docs/ui-settings-quota.png)
-
-两条横向进度条，一条一个窗口，60% / 80% 处有告警刻度，颜色随使用量变化（绿 → 琥珀 → 红）；每行还
-带已用百分比、剩余百分比和重置倒计时。下方六个数字块把条形背后的数据摊开——两个窗口的请求数与
-输入/输出 token——再下面是 7 天 token 构成的分段条。
 
 ![设置页：用量图表与模型分布](docs/ui-settings-usage.png)
 
-柱状图用 flex 盒子绘制（文字清晰、随容器宽度自适应），零值保留基线，标题右侧给出「峰值 · 合计」。
-24 小时图固定为每小时请求数；7 天图可在 **请求 / token** 之间切换，因为请求数是每种套餐都会返回的
-序列。模型分布表保留量级条，套餐不披露 token/费用时自动收起那几列。
-
-侧栏底部把同样的两个窗口显示为两行；侧栏收起时只留条形，标签和数字隐去，完整信息在每行的 tooltip 里。
-
-## 工作原理
-
-**目录。** `/v1/models` 给 id；每个 id 一次 `/api/show` 拿到 `capabilities`（`tools` / `thinking` /
-`vision`）、`<arch>.context_length` 和 `thinking.values`。没有 `tools` 的模型默认跳过（`includeNonToolModels`
-可放开）。结果整体替换该路由的模型列表，内容相同则不重写（不折腾适配器）。
-
-**思考等级。** `thinking.values` 是模型接受的值：`false` → `off: 'none'`（不发参数会退回模型默认，
-通常是想），`true` → 一个 `medium` 档，其余分级值一一对应——同时声明 `xhigh` 与 `max` 的模型两档都给。
-
-**token。** `/api/usage` 只对当前套餐返回 token 与费用，旧版套餐只给请求数。插件因此挂 `llm/stream`
-读每次请求都会发出的 `usage` chunk，按「小时|模型」累计，30 天保留在
-`$DSH_HOME/ollama-cloud-usage.json`（防抖 + 原子写 + `0600`；每次落盘先读回再只叠加本进程的增量，
-因此桌面版和 CLI 共用一个文件也不会互相覆盖），并按 balance 给的重置时刻把这些总量对齐到相同的窗口。
-其他客户端的流量不会进入本机计量，所以有服务端数字时以服务端为准。
+设置页四块：连接、额度条、图表、模型分布。24 小时图固定为每小时请求数。7 天图在请求和 token 之间
+切换，因为请求数是每种套餐都会返回的序列。侧栏底部也显示这两个额度窗口。
 
 ## 配置
 
@@ -97,7 +87,7 @@ cd ~/Dev/dsh-ollama-cloud && dsh plugin --profile web add link:$PWD
 
 ## 对外接口
 
-**命令** —— `/ollama-cloud [status|sync|usage]`（默认 `usage`），纯文本，任何客户端都能用：
+`/ollama-cloud [status|sync|usage]`，默认 `usage`：
 
 ```
 Ollama Cloud 用量：
@@ -107,75 +97,58 @@ Ollama Cloud 用量：
   7d 统计：1.2k 次请求 · 输入 8.9k · 输出 127
 ```
 
-**Web 路由**（同源，供前端使用，也可脚本调用）：
+下面这些路由同源，设置页和侧栏在用，脚本也可以调。
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | `GET` | `/_dsh/ollama-cloud/status` | 是否已配置 key、路由名、模型数、上次同步 |
-| `GET` | `/_dsh/ollama-cloud/usage[?force=1]` | 额度窗口 + 用量 + token 合计（带缓存） |
+| `GET` | `/_dsh/ollama-cloud/usage[?force=1]` | 额度窗口、用量、token 合计 |
 | `POST` | `/_dsh/ollama-cloud/key` | `{ "key": "…" }` 保存并同步，`{ "remove": true }` 删除 |
 | `POST` | `/_dsh/ollama-cloud/sync` | 重新拉取目录 |
 
-写操作只接受应用自身页面（Electron 用 `file://` 载入，因此不透明源或 file 源视为应用本身），其他源一律拒绝；
-`Host` 不是回环主机名或 IP 字面量（DNS rebinding 无法伪造的形态）的请求会在检查 `Origin` 之前就被拒绝。
-
-## 接口覆盖
-
-API key 在 `ollama.com` 上能触达、且编码代理用得上的端点：
-
-| 端点 | 用在哪 |
-|---|---|
-| `POST /v1/chat/completions` | 对话、工具、思考、视觉（经 `dsh-llm-pi-ai`） |
-| `GET /v1/models`、`POST /api/show` | 目录同步 |
-| `POST /api/web_search`、`POST /api/web_fetch` | 两个联网工具 |
-| `GET /api/usage`、`GET /api/balance` | 额度条、用量图表、命令 |
-
-刻意不接：native `/api/chat` / `/api/generate`、Anthropic `/v1/messages`、`/v1/responses`（同一能力换
-了条协议，harness 不走这套），`/api/tags` 的扩展字段（dsh 模型条目没有展示位）。云端根本不开放：
-`/api/ps`、`/api/embed`、`/api/systemone`、`/api/version`（占位值），以及本地模型管理
-（`create`/`copy`/`pull`/`push`/`delete`）——这些用 API key 访问一律 `401`。
+`/key` 和 `/sync` 是写操作：只接受应用自身页面（同源，或 Electron 的 `file://` 不透明源），且
+`Host` 必须是回环主机名或 IP 字面量；其他一律 403。
 
 ## 运行时兼容
 
-同一份代码适配 harness 先后提供的两套设置接缝：
-
 | 运行时 | 设置接缝 | 行为 |
 |---|---|---|
-| `0.1.0-rc.x` | 命名空间注册（`ctx.settings.register`/`get`） | 插件自己持有 `ollama-cloud` 设置项；适配器设置项用 `get('llm-pi-ai')` 读 |
-| `0.2.x`（桌面版） | profile-entry 表单（`describe`/`mutate`） | 条目配置本身就是设置项；适配器的 `llm-pi-ai` 条目用 `describe()` 读、`mutate()` 写 |
+| `0.1.0-rc.x` | `ctx.settings.register` / `get` | 插件自己持有 `ollama-cloud` 设置项；适配器设置项用 `get('llm-pi-ai')` 读 |
+| `0.2.x`（桌面版） | `describe` / `mutate` | 条目配置本身就是设置项；适配器的条目用 `describe()` 读、`mutate()` 写 |
 
-`engines.dsh: ">=0.1.0-rc.6 <1.0.0"` 取代 peer 版本门，避免新运行时把整个 bundle 判为不兼容而静默跳过。
-已在 `0.1.0-rc.6`（CLI）和 `0.2.1-rc.2`（桌面版自带运行时）上验证：目录同步、对话、联网工具、设置页、
-侧栏额度条。CSS token 都带字面回退值，老运行时结构一致、配色略朴素。
+`engines.dsh` 接受 `>=0.1.0-rc.6 <1.0.0`，两个运行时都会加载。已在 `0.1.0-rc.6`（CLI）和
+`0.2.1-rc.2`（桌面版自带运行时）上验证过。CSS token 都带字面回退值，老运行时结构一致、配色略朴素。
 
 ## 已知限制
 
-- **无法硬性限制输出长度。** pi-ai 的兼容性探测会发 `max_completion_tokens`，Ollama 只认 `max_tokens`；
-  `dsh-llm-pi-ai` 只暴露 `compat.thinkingFormat` 与 `compat.supportsReasoningEffort`，此处无法纠正。
-- **本机计量跟着 harness home 走。** 另一台机器或其他客户端的用量不会出现在 token 统计里；按小时分桶
-  意味着窗口边缘最多有一小时误差。
-- **同步独占该路由。** 每次同步整体重写 `llm-pi-ai.providers.ollama-cloud`，对该路由的手改会被覆盖；
-  需要保留手改就设 `syncOnStart: false`。
-- `webTools` 与 `includeNonToolModels` 在注册工具时读取，改动需重启；前端 bundle 走启动哈希，改 UI 也需重启。
-- 用量端点限速 10 次/分钟/用户，一次刷新会打三个请求，因此有缓存、侧栏五分钟轮询一次。
+没法从这里限制输出长度。pi-ai 的兼容性探测发 `max_completion_tokens`，Ollama 只认 `max_tokens`，
+而 `dsh-llm-pi-ai` 没有暴露这个字段的开关。
+
+本机计量只看得到当前 harness home 的流量。换台机器、换个客户端，token 统计里都不会出现；按小时
+分桶也意味着窗口边缘最多差一小时。
+
+目录有变化时，同步会整体替换 `llm-pi-ai.providers.ollama-cloud`，对该路由的手改会丢；把
+`syncOnStart` 设为 `false` 可以让同步变成手动步骤。
+
+`webTools` 和 `includeNonToolModels` 在注册工具时读取，改动要重启；前端侧的改动同理。
+
+用量端点限速 10 次/分钟/用户，一次刷新打三个请求，所以结果有缓存，侧栏五分钟轮询一次。
 
 ## 开发
 
 ```sh
-node test/smoke.mjs      # 目录映射、思考等级、用量计算、计量、写入守卫
+node test/smoke.mjs   # 目录映射、思考等级、用量计算、计量、路由守卫
 ```
 
-没有构建步骤：宿主侧是纯 ESM，前端侧直接按 loader 的工厂形式书写
+没有构建步骤。宿主侧是纯 ESM，前端侧按 loader 的工厂形式写
 （`window.__ModuleLoader__.load({ id, factory })`）。
 
-用桌面版自带运行时做验证（它的内核比 Homebrew CLI 新）：
+用桌面版自带运行时跑 web profile：
 
 ```sh
 APP="/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
 CLI="$APP/../Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js"
 ELECTRON_RUN_AS_NODE=1 DSH_HOME=/tmp/probe "$APP" --expose-internals "$CLI" --profile web --port 8130 --no-open
 ```
-
-`desktop` profile 只能由 Electron 应用启动，因此通过它与 `web` 共享的合成（`dsh-base` + `dsh-web-app`）来验证。
 
 许可证：MIT。
