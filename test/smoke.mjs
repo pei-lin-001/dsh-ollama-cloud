@@ -20,7 +20,7 @@ import {
   quotaBar,
   reasoningEfforts,
 } from '../lib/ollama.js'
-import { deepEqual, sameOriginPost } from '../lib/index.js'
+import { apply, deepEqual, localHost, overlayLocalTokens, sameOriginPost, staleRoutes } from '../lib/index.js'
 
 // --- Thinking levels ---------------------------------------------------------
 
@@ -160,6 +160,52 @@ assert.equal(legacy.tokenSource, 'legacy')
 assert.equal(legacy.fiveHour.inputTokens, undefined)
 assert.match(formatUsage(legacy), /token 统计来自本机 dsh 计量/)
 
+// --- Legacy overlay: the 7d chart covers the weekly window ------------------
+
+const legacyReport = {
+  balance: {
+    session: { usedPercent: 50, remainingPercent: 50 },
+    weekly: { usedPercent: 20, remainingPercent: 80 },
+  },
+  fiveHour: {},
+  sevenDay: {
+    requests: 100,
+    buckets: [
+      { from: '2026-10-12T00:00:00Z', requests: 70 },
+      { from: '2026-10-13T00:00:00Z', requests: 25 },
+      { from: '2026-10-18T00:00:00Z', requests: 5 },
+    ],
+  },
+  hourly: [{ from: '2026-10-18T03:00:00Z', requests: 5 }],
+  tokenSource: 'legacy',
+}
+const meterOutput = {
+  fiveHour: { requests: 3, inputTokens: 30, outputTokens: 6, cachedTokens: 0, models: [] },
+  sevenDay: {
+    requests: 9,
+    inputTokens: 90,
+    outputTokens: 18,
+    cachedTokens: 0,
+    models: [{ model: 'glm-5.3-flash', requests: 9, inputTokens: 90, outputTokens: 18 }],
+  },
+  hourly: [{ hour: '2026-10-18T03', requests: 5, inputTokens: 40, outputTokens: 8, cachedTokens: 0 }],
+  week: [
+    { hour: '2026-10-12T10', requests: 6, inputTokens: 60, outputTokens: 12, cachedTokens: 0 },
+    { hour: '2026-10-13T10', requests: 2, inputTokens: 20, outputTokens: 4, cachedTokens: 0 },
+    { hour: '2026-10-18T03', requests: 1, inputTokens: 10, outputTokens: 2, cachedTokens: 0 },
+  ],
+}
+overlayLocalTokens(legacyReport, meterOutput)
+assert.equal(legacyReport.sevenDay.inputTokens, 90, 'window totals come from the meter')
+assert.deepEqual(
+  legacyReport.sevenDay.buckets.map((bucket) => bucket.inputTokens),
+  [60, 20, 10],
+  'every bucket in the weekly window gets its own day, not only the last 24h',
+)
+assert.deepEqual(legacyReport.sevenDay.buckets.map((bucket) => bucket.outputTokens), [12, 4, 2])
+assert.deepEqual(legacyReport.hourly.map((bucket) => bucket.inputTokens), [40], 'the 24h chart still overlays by hour')
+assert.equal(legacyReport.fiveHour.inputTokens, 30)
+
 // --- Local token meter ------------------------------------------------------
 
 const rows = new Map()
@@ -181,24 +227,212 @@ assert.equal(meter.totals({ from: 0 }).inputTokens, 10)
 await meter.flush()
 const reopened = await openMeter({ path: meterPath, now: () => nowMs })
 assert.equal(reopened.totals({ from: 0 }).outputTokens, 5, 'totals survive a restart')
+
+// Two harness processes share one file: each flush re-reads it and adds only its
+// own delta, so the last writer no longer erases the other's rows.
+const sharedPath = join(dir, 'shared.json')
+const meterA = await openMeter({ path: sharedPath, now: () => nowMs })
+const meterB = await openMeter({ path: sharedPath, now: () => nowMs })
+meterA.record({ model: 'glm-5.3-flash', usage: { inputTokens: 10, outputTokens: 5 } })
+meterB.record({ model: 'glm-5.3-flash', usage: { inputTokens: 1, outputTokens: 2 } })
+await meterA.flush()
+await meterB.flush()
+meterA.record({ model: 'glm-5.3-flash', usage: { inputTokens: 4 } })
+await meterA.flush()
+const shared = await openMeter({ path: sharedPath, now: () => nowMs })
+assert.deepEqual(
+  shared.totals({ from: 0 }),
+  { requests: 3, inputTokens: 15, outputTokens: 7, cachedTokens: 0 },
+  'both processes keep their rows, and a re-flush does not double count',
+)
+
 await rm(dir, { recursive: true, force: true })
 
 // --- Settings write guard ---------------------------------------------------
 
 const post = (headers) => sameOriginPost({ method: 'POST', headers })
-assert.equal(post({ origin: null }), true, 'Electron file:// pages send an opaque origin')
-assert.equal(post({ origin: 'null' }), true)
-assert.equal(post({ origin: 'file://' }), true)
-assert.equal(post({}), true, 'a same-origin POST may omit Origin entirely')
-assert.equal(post({ host: '127.0.0.1:8123', origin: 'http://127.0.0.1:8123' }), true)
-assert.equal(post({ host: '127.0.0.1:8123', origin: 'http://evil.example' }), false)
-assert.equal(post({ 'sec-fetch-site': 'cross-site', origin: 'null' }), false, 'cross-site is refused even from a file origin')
-assert.equal(post({ host: '127.0.0.1:8123', origin: 'not a url' }), false)
+const host = '127.0.0.1:8123'
+assert.equal(post({ host, origin: null }), true, 'Electron file:// pages send an opaque origin')
+assert.equal(post({ host, origin: 'null' }), true)
+assert.equal(post({ host, origin: 'file://' }), true)
+assert.equal(post({ host }), true, 'a same-origin POST may omit Origin entirely')
+assert.equal(post({ host, origin: 'http://127.0.0.1:8123' }), true)
+assert.equal(post({ host: 'localhost:8123', origin: 'http://localhost:8123' }), true)
+assert.equal(post({ host: '192.168.1.5:8123', origin: 'http://192.168.1.5:8123' }), true, 'a LAN IP literal is still same-origin')
+assert.equal(post({ host: '[::1]:8123', origin: 'null' }), true)
+assert.equal(post({ host, origin: 'http://evil.example' }), false)
+assert.equal(post({ host, 'sec-fetch-site': 'cross-site', origin: 'null' }), false, 'cross-site is refused even from a file origin')
+assert.equal(post({ host, origin: 'not a url' }), false)
+
+// DNS rebinding: the attacker's domain resolves to 127.0.0.1, so Origin and
+// Host agree — only the Host check can tell that apart from the app itself.
+assert.equal(post({ host: 'evil.example:8123', origin: 'http://evil.example:8123' }), false)
+assert.equal(post({ host: 'evil.example:8123', origin: 'null' }), false)
+assert.equal(post({}), false, 'a state-changing POST without Host is refused')
+assert.equal(post({ host: '' }), false)
+assert.equal(post({ host: '127.0.0.1.evil.example' }), false)
+assert.equal(localHost('127.0.0.1:8123'), true)
+assert.equal(localHost('localhost'), true)
+assert.equal(localHost('[::1]:8123'), true)
+assert.equal(localHost('evil.example'), false)
 
 // --- Provider-profile change detector --------------------------------------
 
 assert.equal(deepEqual({ a: [1, { b: 2 }] }, { a: [1, { b: 2 }] }), true)
 assert.equal(deepEqual({ a: 1 }, { a: 2 }), false)
 assert.equal(deepEqual({ a: 1 }, { a: 1, b: undefined }), false, 'an added key is a change')
+
+// --- Stale route cleanup after a provider rename ---------------------------
+
+const written = {
+  displayName: 'Ollama Cloud',
+  api: 'openai-completions',
+  baseURL: 'https://ollama.com/v1',
+  apiKeyEnv: 'OLLAMA_API_KEY',
+  models: [{ id: 'glm-5.3' }],
+}
+assert.deepEqual(staleRoutes({ 'ollama-cloud': written }, 'cloud', written), ['ollama-cloud'], 'a renamed route is cleaned up')
+assert.deepEqual(staleRoutes({ cloud: written }, 'cloud', written), [], 'the current route is never stale')
+assert.deepEqual(staleRoutes({ manual: { ...written, apiKeyEnv: 'OTHER_KEY' } }, 'cloud', written), [], 'a hand-authored route with another key is left alone')
+assert.deepEqual(staleRoutes({ manual: { ...written, displayName: 'My Ollama' } }, 'cloud', written), [])
+assert.deepEqual(staleRoutes(undefined, 'cloud', written), [])
+
+// --- Route handlers against a fake composition ------------------------------
+//
+// The plugin is mounted on a stub Cordis context so the Web routes, the catalog
+// write, and the sync guard can be exercised without a running harness.
+
+const home = await mkdtemp(join(tmpdir(), 'dsh-oc-home-'))
+const previousHome = process.env.DSH_HOME
+process.env.DSH_HOME = home
+
+const providers = {
+  // A route this plugin wrote before `provider` was renamed.
+  'old-route': {
+    displayName: 'Ollama Cloud',
+    api: 'openai-completions',
+    baseURL: 'https://ollama.com/v1',
+    apiKeyEnv: 'OLLAMA_API_KEY',
+    models: [],
+  },
+}
+const writes = []
+const routes = new Map()
+const defaults = {
+  provider: 'ollama-cloud',
+  displayName: 'Ollama Cloud',
+  apiKeyRef: 'OLLAMA_API_KEY',
+  baseURL: 'https://ollama.com',
+  syncOnStart: false,
+  includeNonToolModels: false,
+  webTools: true,
+  maxOutputChars: 20000,
+  usageCacheSeconds: 120,
+}
+const ctx = {
+  logger: { warn() {}, info() {} },
+  on() {},
+  effect: (fn) => fn(),
+  inject: (_names, callback) => callback(ctx),
+  settings: {
+    register: (_ns, _schema, options) => ({
+      get: () => ({ ...defaults, ...(options && options.base) }),
+      watch: () => () => {},
+    }),
+    get: (ns) => (ns === 'llm-pi-ai' ? { providers } : undefined),
+    mutate: async (ns, ops) => {
+      writes.push({ ns, ops })
+      for (const op of ops) {
+        if (op.op === 'set') providers[op.path[1]] = op.value
+        else delete providers[op.path[1]]
+      }
+    },
+  },
+  credentials: {
+    resolve: async () => ({ value: 'test-key' }),
+    set: async () => {},
+    unset: async () => {},
+  },
+  tools: { register: () => () => {} },
+  commands: { register: () => () => {} },
+  webServer: {
+    register: (route) => {
+      routes.set(route.path, route)
+      return () => routes.delete(route.path)
+    },
+  },
+}
+const dispose = apply(ctx, {})
+
+const showPayload = () => ({
+  capabilities: ['completion', 'tools', 'thinking', 'vision'],
+  model_info: { 'glm5_next.context_length': 262144 },
+  thinking: { values: ['low', 'high'] },
+})
+globalThis.fetch = async (url) => {
+  const target = String(url)
+  const payload = target.endsWith('/v1/models')
+    ? { data: [{ id: 'glm-5.3' }, { id: 'kimi-k3' }] }
+    : target.endsWith('/api/show')
+      ? showPayload()
+      : target.endsWith('/api/balance')
+        ? {
+            included: {
+              session: { remaining_percent: 60, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+              weekly: { remaining_percent: 40, resets_at: new Date(Date.now() + 4 * DAY).toISOString() },
+            },
+            purchased: { balance_usd: 0 },
+          }
+        : { range: target.includes('24h') ? '24h' : '7d', buckets: [], totals: { request_count: 7 } }
+  return { ok: true, status: 200, text: async () => JSON.stringify(payload) }
+}
+
+/** Invoke one registered route with a browser-shaped request. */
+async function callRoute(path, { method = 'POST', headers = {}, body } = {}) {
+  const route = routes.get(path)
+  assert.ok(route !== undefined, `${path} is registered`)
+  const res = {
+    status: undefined,
+    payload: undefined,
+    setHeader() {},
+    writeHead(status) {
+      this.status = status
+    },
+    end(bytes) {
+      this.payload = bytes === undefined ? undefined : JSON.parse(Buffer.from(bytes).toString('utf8'))
+    },
+  }
+  await route.handler({ method, url: path, headers: { host: '127.0.0.1:8123', origin: 'null', ...headers } }, res)
+  return res
+}
+
+const appHeaders = { host: '127.0.0.1:8123', origin: 'null' }
+const synced = await callRoute('/_dsh/ollama-cloud/sync', { headers: appHeaders })
+assert.equal(synced.status, 200)
+assert.equal(synced.payload.ok, true)
+assert.equal(synced.payload.status.models.length, 2, 'the live catalog is written and reported')
+assert.ok(providers['ollama-cloud'] !== undefined, 'the configured route receives the profile')
+assert.equal(providers['old-route'], undefined, 'the route left by the old provider name is removed')
+assert.ok(
+  writes.some(({ ops }) => ops.some((op) => op.op === 'unset' && op.path[1] === 'old-route')),
+  'removal goes through the settings write path',
+)
+
+const rebound = await callRoute('/_dsh/ollama-cloud/sync', {
+  headers: { host: 'evil.example:8123', origin: 'http://evil.example:8123' },
+})
+assert.equal(rebound.status, 403, 'a write behind a rebound domain is refused')
+
+const usageRoute = await callRoute('/_dsh/ollama-cloud/usage', { method: 'GET', headers: { host: '127.0.0.1:8123' } })
+assert.equal(usageRoute.status, 200)
+assert.equal(usageRoute.payload.ok, true)
+assert.equal(usageRoute.payload.usage.sevenDay.requests, 7)
+assert.equal(usageRoute.payload.usage.balance.session.usedPercent, 40)
+assert.ok(usageRoute.payload.usage.local !== undefined, 'the local meter block travels with the report')
+
+dispose()
+if (previousHome === undefined) delete process.env.DSH_HOME
+else process.env.DSH_HOME = previousHome
+await rm(home, { recursive: true, force: true })
 
 console.log('dsh-ollama-cloud smoke: ok')

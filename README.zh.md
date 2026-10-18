@@ -73,8 +73,9 @@ cd ~/Dev/dsh-ollama-cloud && dsh plugin --profile web add link:$PWD
 
 **token。** `/api/usage` 只对当前套餐返回 token 与费用，旧版套餐只给请求数。插件因此挂 `llm/stream`
 读每次请求都会发出的 `usage` chunk，按「小时|模型」累计，30 天保留在
-`$DSH_HOME/ollama-cloud-usage.json`（防抖 + 原子写 + `0600`），并按 balance 给的重置时刻把这些总量对
-齐到相同的窗口。其他客户端的流量不会进入本机计量，所以有服务端数字时以服务端为准。
+`$DSH_HOME/ollama-cloud-usage.json`（防抖 + 原子写 + `0600`；每次落盘先读回再只叠加本进程的增量，
+因此桌面版和 CLI 共用一个文件也不会互相覆盖），并按 balance 给的重置时刻把这些总量对齐到相同的窗口。
+其他客户端的流量不会进入本机计量，所以有服务端数字时以服务端为准。
 
 ## 配置
 
@@ -115,7 +116,8 @@ Ollama Cloud 用量：
 | `POST` | `/_dsh/ollama-cloud/key` | `{ "key": "…" }` 保存并同步，`{ "remove": true }` 删除 |
 | `POST` | `/_dsh/ollama-cloud/sync` | 重新拉取目录 |
 
-写操作只接受应用自身页面（Electron 用 `file://` 载入，因此不透明源或 file 源视为应用本身），其他源一律拒绝。
+写操作只接受应用自身页面（Electron 用 `file://` 载入，因此不透明源或 file 源视为应用本身），其他源一律拒绝；
+`Host` 不是回环主机名或 IP 字面量（DNS rebinding 无法伪造的形态）的请求会在检查 `Origin` 之前就被拒绝。
 
 ## 接口覆盖
 

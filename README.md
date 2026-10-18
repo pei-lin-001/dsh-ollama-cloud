@@ -84,9 +84,10 @@ whole, and an identical section is not rewritten (no churn for the adapter).
 **Tokens.** `/api/usage` reports tokens and cost only on a current plan; a legacy plan returns request
 counts alone. The plugin taps the `usage` chunk every request already emits (`llm/stream`),
 accumulates input/cached/output per model in hourly buckets, keeps 30 days in
-`$DSH_HOME/ollama-cloud-usage.json` (debounced atomic write, `0600`), and anchors those totals to the
-windows the balance reports via each window's reset time. Traffic from other clients is invisible to
-that meter, which is why server numbers win whenever they exist.
+`$DSH_HOME/ollama-cloud-usage.json` (debounced atomic write, `0600`; a flush re-reads the file and adds
+only this process's delta, so the desktop app and a CLI can share it without erasing each other), and
+anchors those totals to the windows the balance reports via each window's reset time. Traffic from
+other clients is invisible to that meter, which is why server numbers win whenever they exist.
 
 ## Configuration
 
@@ -128,7 +129,9 @@ Ollama Cloud 用量：
 | `POST` | `/_dsh/ollama-cloud/sync` | re-pull the catalog |
 
 Writes are accepted from the app's own page only (Electron serves it over `file://`, so an opaque or
-file origin counts as the app itself) and refused for any other origin.
+file origin counts as the app itself) and refused for any other origin. A write whose `Host` is not a
+loopback name or an IP literal — the shape a DNS-rebinding attack cannot produce — is refused before
+`Origin` is even consulted.
 
 ## API coverage
 
