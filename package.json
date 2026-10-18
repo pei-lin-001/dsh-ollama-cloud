@@ -11,10 +11,11 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "LICENSE",
-    "README.md",
+    "lib",
     "cordis.patch.yml",
-    "lib"
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
   ],
   "keywords": [
     "deepseek-harness",
