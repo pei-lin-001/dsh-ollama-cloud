@@ -22,8 +22,12 @@ web tools, and shows 5h/7d usage — no local Ollama server, no hand-written mod
 ## Install
 
 ```sh
-dsh plugin --profile web add link:/path/to/dsh-ollama-cloud
-dsh plugin --profile desktop add link:/path/to/dsh-ollama-cloud   # the desktop app's profile
+# the desktop app's profile, and/or the web profile
+dsh plugin --profile desktop add git:github.com/pei-lin-001/dsh-ollama-cloud
+dsh plugin --profile web add git:github.com/pei-lin-001/dsh-ollama-cloud
+
+# a local checkout you want to edit live
+dsh plugin --profile web add link:$HOME/Dev/dsh-ollama-cloud
 ```
 
 Then start the profile (`dsh --profile web`), open **Settings → Ollama Cloud**, paste the
@@ -31,10 +35,10 @@ key from [ollama.com](https://ollama.com), and press **保存并同步**. The ca
 `$DSH_HOME/settings.yaml` under `llm-pi-ai.providers.ollama-cloud` and the models appear in
 the model picker immediately.
 
-A published copy (a real directory in the profile's `node_modules`) needs nothing else. A
-`link:` checkout resolves its peers from its own `node_modules`, so for development run
-`scripts/link-peers.sh` once — it symlinks `schemastery`, `dsh-credentials`, `dsh-settings`,
-and `dsh-tools` from the profile's hoisted `node_modules`.
+A `git:` install lands as a real directory in the profile's `node_modules`, so its peers
+resolve normally. A `link:` checkout resolves peers from its own `node_modules`, so after
+linking run `scripts/link-peers.sh` once — it symlinks `schemastery`, `dsh-credentials`,
+`dsh-settings`, and `dsh-tools` from the profile's hoisted `node_modules`.
 
 ## Configuration
 
