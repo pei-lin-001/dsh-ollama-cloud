@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { openContextOverrides } from '../lib/context.js'
 import { accumulate, hourKey, hourStart, openMeter, windowModels, windowSeries, windowTotals } from '../lib/meter.js'
 import {
   contextLength,
@@ -266,6 +267,15 @@ assert.deepEqual(
   { requests: 3, inputTokens: 15, outputTokens: 7, cachedTokens: 0, reasoningTokens: 0 },
   'both processes keep their rows, and a re-flush does not double count',
 )
+
+// Context overrides survive a restart and disappear on delete.
+const overridePath = join(dir, 'context.json')
+const overrideStore = await openContextOverrides({ path: overridePath })
+await overrideStore.set('glm-5.3', 131072)
+assert.deepEqual(overrideStore.all(), { 'glm-5.3': 131072 })
+assert.deepEqual((await openContextOverrides({ path: overridePath })).all(), { 'glm-5.3': 131072 }, 'overrides persist')
+await (await openContextOverrides({ path: overridePath })).delete('glm-5.3')
+assert.deepEqual((await openContextOverrides({ path: overridePath })).all(), {})
 
 await rm(dir, { recursive: true, force: true })
 
@@ -593,7 +603,15 @@ async function callRoute(mount, path, { method = 'POST', headers = {}, body } = 
       this.payload = bytes === undefined ? undefined : JSON.parse(Buffer.from(bytes).toString('utf8'))
     },
   }
-  await route.handler({ method, url: path, headers: { host: '127.0.0.1:8123', origin: 'null', ...headers } }, res)
+  const req = {
+    method,
+    url: path,
+    headers: { host: '127.0.0.1:8123', origin: 'null', ...headers },
+    async *[Symbol.asyncIterator]() {
+      if (body !== undefined) yield Buffer.from(body)
+    },
+  }
+  await route.handler(req, res)
   return res
 }
 
@@ -639,6 +657,36 @@ assert.equal(usageRoute.payload.ok, true)
 assert.equal(usageRoute.payload.usage.sevenDay.requests, 7)
 assert.equal(usageRoute.payload.usage.balance.session.usedPercent, 40)
 assert.ok(usageRoute.payload.usage.local !== undefined, 'the local meter block travels with the report')
+
+const contextSet = await callRoute(bounded, '/_dsh/ollama-cloud/context', {
+  headers: appHeaders,
+  body: JSON.stringify({ model: 'glm-5.3', contextWindow: 131072 }),
+})
+assert.equal(contextSet.status, 200)
+const overridden = contextSet.payload.status.catalog.find((row) => row.id === 'glm-5.3')
+assert.equal(overridden.contextWindow, 131072)
+assert.equal(overridden.overridden, true)
+assert.equal(bounded.providers['ollama-cloud'].models.find((row) => row.id === 'glm-5.3').contextWindow, 131072, 'the route carries the override')
+assert.equal(bounded.providers['ollama-cloud'].models.find((row) => row.id === 'kimi-k3').contextWindow, 262144, 'other models keep the catalog value')
+
+const contextReset = await callRoute(bounded, '/_dsh/ollama-cloud/context', {
+  headers: appHeaders,
+  body: JSON.stringify({ model: 'glm-5.3', contextWindow: null }),
+})
+const restored = contextReset.payload.status.catalog.find((row) => row.id === 'glm-5.3')
+assert.equal(restored.contextWindow, 262144, 'a reset restores the catalog value')
+assert.equal(restored.overridden, false)
+
+assert.equal(
+  (await callRoute(bounded, '/_dsh/ollama-cloud/context', { headers: appHeaders, body: JSON.stringify({ model: 'glm-5.3', contextWindow: 0 }) })).status,
+  400,
+  'a non-positive context is refused',
+)
+assert.equal(
+  (await callRoute(bounded, '/_dsh/ollama-cloud/context', { headers: appHeaders, body: JSON.stringify({ model: 'nope', contextWindow: 1024 }) })).status,
+  400,
+  'an unknown model is refused',
+)
 bounded.dispose()
 
 // Adapter without a bound (0.1.0-rc.x): the plugin trims the outgoing request.

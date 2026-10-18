@@ -69,7 +69,7 @@ cd ~/Dev/dsh-ollama-cloud && dsh plugin --profile web add link:$PWD
 
 ![设置页：用量图表与模型分布](docs/ui-settings-usage.png)
 
-设置页四块：连接、额度条、图表、模型分布。24 小时图固定为每小时请求数。7 天图在请求和 token 之间
+设置页五块：连接、额度条、图表、模型上下文、模型分布。24 小时图固定为每小时请求数。7 天图在请求和 token 之间
 切换，因为请求数是每种套餐都会返回的序列。侧栏底部也显示这两个额度窗口。
 
 ## 配置
@@ -90,6 +90,9 @@ cd ~/Dev/dsh-ollama-cloud && dsh plugin --profile web add link:$PWD
     usageCacheSeconds: 120        # /api/balance + /api/usage 缓存
     maxRequestImageBytes: 6291456 # 单次请求的图片 base64 预算；0 表示交给适配器默认
 ```
+
+模型的 `contextWindow` 来自 `/api/show`。可以在设置页的「模型上下文」里覆盖，选择存在
+`$DSH_HOME/ollama-cloud-context.json`，每次目录同步都会叠加上去；恢复目录值即删除覆盖。
 
 ## 对外接口
 
