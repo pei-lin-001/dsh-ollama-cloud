@@ -20,7 +20,7 @@ import {
   quotaBar,
   reasoningEfforts,
 } from '../lib/ollama.js'
-import { apply, deepEqual, localHost, overlayLocalTokens, sameOriginPost, staleRoutes } from '../lib/index.js'
+import { apply, deepEqual, localHost, overlayLocalTokens, profileEqual, sameOriginPost, staleRoutes } from '../lib/index.js'
 
 // --- Thinking levels ---------------------------------------------------------
 
@@ -297,6 +297,25 @@ assert.deepEqual(staleRoutes({ manual: { ...written, apiKeyEnv: 'OTHER_KEY' } },
 assert.deepEqual(staleRoutes({ manual: { ...written, displayName: 'My Ollama' } }, 'cloud', written), [])
 assert.deepEqual(staleRoutes(undefined, 'cloud', written), [])
 
+// --- Unchanged-profile detection -------------------------------------------
+//
+// The adapter's schema injects route defaults on every read. Comparing the
+// whole resolved route made every sync rewrite an unchanged profile.
+
+const resolvedRoute = {
+  ...written,
+  defaultContextWindow: 262144,
+  defaultMaxTokens: 32768,
+  defaultInput: ['text'],
+  streamIdleTimeoutMs: 300000,
+}
+assert.equal(profileEqual(resolvedRoute, written), true, 'schema-injected defaults are not a change this plugin wrote')
+assert.equal(profileEqual(written, written), true)
+assert.equal(profileEqual(undefined, written), false, 'an absent route is written')
+assert.equal(profileEqual({ ...resolvedRoute, displayName: 'Other' }, written), false)
+assert.equal(profileEqual({ ...resolvedRoute, models: [] }, written), false, 'a catalog change is a change')
+assert.equal(profileEqual({ ...resolvedRoute, defaultInput: ['text', 'image'] }, written), true, 'a field this plugin does not own is left alone')
+
 // --- Route handlers against a fake composition ------------------------------
 //
 // The plugin is mounted on a stub Cordis context so the Web routes, the catalog
@@ -417,6 +436,10 @@ assert.ok(
   writes.some(({ ops }) => ops.some((op) => op.op === 'unset' && op.path[1] === 'old-route')),
   'removal goes through the settings write path',
 )
+
+const resynced = await callRoute('/_dsh/ollama-cloud/sync', { headers: appHeaders })
+assert.equal(resynced.payload.status.sync.changed, false, 'a second sync finds the route it just wrote unchanged')
+assert.equal(writes.length, 1, 'an unchanged route is not written again')
 
 const rebound = await callRoute('/_dsh/ollama-cloud/sync', {
   headers: { host: 'evil.example:8123', origin: 'http://evil.example:8123' },
