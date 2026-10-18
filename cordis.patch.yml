@@ -1,0 +1,11 @@
+# dsh-ollama-cloud bundle patch: mounts the plugin into a profile layer stack.
+# Runtime defaults live at the plugin's own config schema; a profile overrides
+# them in its own patch row with the same id, e.g.
+#
+#   - id: ollama-cloud
+#     config:
+#       provider: ollama-cloud
+#       apiKeyRef: OLLAMA_API_KEY
+- insert:
+    - id: ollama-cloud
+      name: dsh-ollama-cloud
