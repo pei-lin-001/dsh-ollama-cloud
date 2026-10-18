@@ -334,6 +334,38 @@ assert.equal(
 assert.equal(profileEqual({ ...resolvedRoute, maxRequestImageBytes: 20971520 }, { ...written, maxRequestImageBytes: 6 * 1024 * 1024 }), false)
 assert.equal(profileEqual({ ...resolvedRoute, maxRequestImageBytes: 6 * 1024 * 1024 }, written), true, 'a field the profile omits is not compared')
 
+// The resolved catalog also materializes `input: []` and `compat: {}` per model.
+const writtenModels = {
+  ...written,
+  models: [
+    { id: 'beam', name: 'beam', contextWindow: 1048576, reasoningEfforts: { low: 'low' } },
+    { id: 'vision', name: 'vision', contextWindow: 262144, input: ['text', 'image'] },
+  ],
+}
+const materializedModels = {
+  ...writtenModels,
+  models: [
+    { id: 'beam', name: 'beam', contextWindow: 1048576, input: [], reasoningEfforts: { low: 'low' }, compat: {} },
+    { id: 'vision', name: 'vision', contextWindow: 262144, input: ['text', 'image'], compat: {} },
+  ],
+}
+assert.equal(profileEqual(materializedModels, writtenModels), true, 'materialized model fields are not a change')
+assert.equal(
+  profileEqual({ ...materializedModels, models: [{ ...materializedModels.models[0], contextWindow: 4096 }, materializedModels.models[1]] }, writtenModels),
+  false,
+  'a context window change is a change',
+)
+assert.equal(profileEqual({ ...materializedModels, models: [materializedModels.models[0]] }, writtenModels), false, 'a dropped model is a change')
+assert.equal(
+  profileEqual({ ...materializedModels, models: [materializedModels.models[0], { ...materializedModels.models[1], input: ['text'] }] }, writtenModels),
+  false,
+  'a modality change is a change',
+)
+assert.equal(
+  profileEqual({ ...materializedModels, models: [materializedModels.models[0], materializedModels.models[1]], maxRequestImageBytes: 6291456 }, { ...writtenModels, maxRequestImageBytes: 6291456 }),
+  true,
+)
+
 // --- Request image budget ---------------------------------------------------
 
 const imageBlock = (bytes, id = 'img') => ({
