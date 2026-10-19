@@ -99,9 +99,10 @@ Entry config is the `ollama-cloud` settings section; override it in the profile 
     maxRequestImageBytes: 6291456 # base64 image budget per request; 0 = adapter default
 ```
 
-A model's `contextWindow` comes from `/api/show`. Override it on the settings page (模型上下文); the
-choice is kept in `$DSH_HOME/ollama-cloud-context.json` and layered on top of every catalog sync.
-Resetting a model restores the reported value.
+A model's `contextWindow` comes from `/api/show`. Override it on the settings page (模型上下文) or from
+the composer's 上下文 chip beside the model button; the choice is kept in
+`$DSH_HOME/ollama-cloud-context.json` and layered on top of every catalog sync. Resetting a model
+restores the reported value.
 
 ## Command and routes
 

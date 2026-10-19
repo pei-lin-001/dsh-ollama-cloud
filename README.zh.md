@@ -91,8 +91,9 @@ cd ~/Dev/dsh-ollama-cloud && dsh plugin --profile web add link:$PWD
     maxRequestImageBytes: 6291456 # 单次请求的图片 base64 预算；0 表示交给适配器默认
 ```
 
-模型的 `contextWindow` 来自 `/api/show`。可以在设置页的「模型上下文」里覆盖，选择存在
-`$DSH_HOME/ollama-cloud-context.json`，每次目录同步都会叠加上去；恢复目录值即删除覆盖。
+模型的 `contextWindow` 来自 `/api/show`。可以在设置页的「模型上下文」里覆盖，也可以点输入框旁
+模型按钮旁的「上下文」按钮直接改；选择存在 `$DSH_HOME/ollama-cloud-context.json`，每次目录同步
+都会叠加上去；恢复目录值即删除覆盖。
 
 ## 对外接口
 
