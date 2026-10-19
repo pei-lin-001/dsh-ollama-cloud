@@ -76,7 +76,7 @@ of that budget.
 
 ![Settings: usage charts and per-model table](docs/ui-settings-usage.png)
 
-The settings page has five parts: connection, quota bars, charts, model context, per-model table. The 24h chart is
+The settings page has four parts: connection, quota bars, charts, per-model table. The 24h chart is
 hourly requests. The 7d chart switches between requests and tokens, because requests are the series
 every plan returns. The sidebar footer shows both quota windows. UI copy is Chinese.
 
@@ -99,10 +99,9 @@ Entry config is the `ollama-cloud` settings section; override it in the profile 
     maxRequestImageBytes: 6291456 # base64 image budget per request; 0 = adapter default
 ```
 
-A model's `contextWindow` comes from `/api/show`. Override it on the settings page (模型上下文) or from
-the composer's 上下文 chip beside the model button; the choice is kept in
-`$DSH_HOME/ollama-cloud-context.json` and layered on top of every catalog sync. Resetting a model
-restores the reported value.
+A model's `contextWindow` comes from `/api/show`. The composer's 上下文 chip beside the model button
+overrides it for the selected model only; the choice is kept in `$DSH_HOME/ollama-cloud-context.json`
+and layered on top of every catalog sync. Resetting restores the reported value.
 
 ## Command and routes
 
